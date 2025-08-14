@@ -3,10 +3,10 @@ import random
 import re
 import requests
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://wishlink-bot.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
 
 # --- Random Titles ---
 TITLES = [
@@ -52,7 +52,9 @@ def get_product_links_from_post(post_id):
         return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Hey! 👋 Send me a Wishlink or Instagram post/reel link and I’ll fetch the real product links for you.")
+    await update.message.reply_text(
+        "Hey! 👋 Send me a Wishlink or Instagram post/reel link and I’ll fetch the real product links for you."
+    )
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text.strip()
@@ -84,11 +86,11 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(output, parse_mode="Markdown")
 
 if __name__ == "__main__":
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
 
-    application.run_webhook(
+    app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 8080)),
         url_path=TOKEN,
