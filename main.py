@@ -1,14 +1,19 @@
+# NEW SIMPLIFIED CODE - Replace kar do is se:
+
 import os
 import random
 import re
 import requests
 from telegram import Update
-from telegram.helpers import escape_markdown
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from flask import Flask, request, jsonify
-import asyncio
-import threading
-from concurrent.futures import ThreadPoolExecutor
+import logging
+
+# Enable logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # Environment variables
 TOKEN = os.getenv("BOT_TOKEN")
@@ -21,26 +26,21 @@ TITLES = [
     "🛒 Shop Now!", "📢 Price Drop!", "🎉 Mega Offer!", "🤑 Crazy Discount!"
 ]
 
-# Global variables
-telegram_app = None
-event_loop = None
-executor = ThreadPoolExecutor(max_workers=4)
-
-# Get final URL after redirects
 def get_final_url_from_redirect(start_url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(start_url, timeout=15, headers=headers, allow_redirects=True)
         return response.url
-    except:
+    except Exception as e:
+        logger.error(f"Redirect error: {e}")
         return None
 
-# Extract post ID from Instagram URL
 def extract_post_id_from_url(url):
     match = re.search(r"/(?:post|reels)/(\d+)", url)
-    return match.group(1) if match else None
+    result = match.group(1) if match else None
+    logger.info(f"Extract post ID from {url}: {result}")
+    return result
 
-# Get product links from Wishlink API
 def get_product_links_from_post(post_id):
     headers = {
         "accept": "*/*",
@@ -58,179 +58,118 @@ def get_product_links_from_post(post_id):
     
     for api_url in api_urls:
         try:
+            logger.info(f"Trying API: {api_url}")
             response = requests.get(api_url, headers=headers)
             response.raise_for_status()
             data = response.json()
             products = data.get("data", {}).get("products", [])
+            logger.info(f"API response: {len(products)} products found")
             if products:
-                return [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
-        except:
+                links = [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
+                logger.info(f"Product links: {len(links)}")
+                return links
+        except Exception as e:
+            logger.error(f"API error: {e}")
             continue
     
     return []
 
-# Proper markdown escaping
-def escape_for_markdown(text):
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-    for char in special_chars:
-        text = text.replace(char, f'\\{char}')
-    return text
-
-# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Start command from user: {update.effective_user.id}")
     await update.message.reply_text(
-        "Hey! 👋 Send me a Wishlink or Instagram post/reel link and I'll fetch the real product links for you."
+        "Hey! 👋 Send me a Wishlink or Instagram post/reel link and I'll fetch the real product links for you.\n\nExample:\nhttps://www.wishlink.com/share/dupdx\nor\nhttps://wishlink.com/username/post/123456"
     )
 
-# Handle links
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = None
-    if update.message.text:
-        text = update.message.text
-    elif update.message.caption:
-        text = update.message.caption
+    logger.info(f"Message received from user: {update.effective_user.id}")
+    
+    # Get text from message or caption
+    text = update.message.text or update.message.caption
     
     if not text:
+        logger.info("No text found in message")
         return
 
+    logger.info(f"Processing text: {text}")
+    
+    # Check if message contains any URL
+    if not any(word.startswith('http') for word in text.split()):
+        logger.info("No HTTP links found in text")
+        return
+    
     await update.message.reply_text("Processing your link… 🔄")
 
     all_links = []
     urls = re.findall(r'(https?://\S+)', text)
+    logger.info(f"Found URLs: {urls}")
     
     for url in urls:
+        logger.info(f"Processing URL: {url}")
+        
         if "/share/" in url:
+            logger.info(f"Processing share URL: {url}")
             redirected = get_final_url_from_redirect(url)
             if redirected:
                 all_links.append(redirected)
-        else:
+                logger.info(f"Redirected to: {redirected}")
+        elif "wishlink.com" in url:
             post_id = extract_post_id_from_url(url)
             if post_id:
+                logger.info(f"Extracted post ID: {post_id}")
                 product_links = get_product_links_from_post(post_id)
                 all_links.extend(product_links)
+                logger.info(f"Found {len(product_links)} product links")
+            else:
+                logger.info("No post ID found in wishlink URL")
+
+    logger.info(f"Total links found: {len(all_links)}")
 
     if not all_links:
-        await update.message.reply_text("❌ No product links found.")
+        logger.info("No product links found")
+        await update.message.reply_text("❌ No product links found. Please check your Wishlink URL format.")
         return
-
+    
+    # Simple output 
     title = random.choice(TITLES)
-    max_links_per_message = 8
-    link_chunks = [all_links[i:i + max_links_per_message] for i in range(0, len(all_links), max_links_per_message)]
     
-    for i, chunk in enumerate(link_chunks):
-        if i == 0:
-            output = f"*{escape_for_markdown(title)}*\n\n"
-        else:
-            output = f"*{escape_for_markdown(title)} \\- Part {i+1}*\n\n"
-        
-        for link in chunk:
-            discount = random.randint(50, 90)
-            discount_text = escape_for_markdown(f"({discount}% OFF)")
-            safe_link = escape_for_markdown(link)
-            output += f"{discount_text} {safe_link}\n\n"
-        
-        try:
-            await update.message.reply_text(output, parse_mode="MarkdownV2")
-        except Exception as e:
-            # Fallback to plain text
-            plain_output = title + "\n\n"
-            for link in chunk:
-                discount = random.randint(50, 90)
-                plain_output += f"({discount}% OFF) {link}\n\n"
-            await update.message.reply_text(plain_output)
-
-# Health check
-async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bot is running! 🟢")
-
-# FIXED: Proper async handling in Flask
-def process_update_sync(update_dict):
-    """Process telegram update in sync context"""
-    global telegram_app, event_loop
+    # Limit links to avoid long messages
+    max_links = 8
+    if len(all_links) > max_links:
+        all_links = all_links[:max_links]
+    
+    output = f"🎉 {title}\n\n"
+    
+    for i, link in enumerate(all_links, 1):
+        discount = random.randint(50, 85)
+        output += f"{i}. ({discount}% OFF)\n{link}\n\n"
     
     try:
-        if telegram_app and event_loop:
-            update = Update.de_json(update_dict, telegram_app.bot)
-            
-            # Run coroutine in the event loop
-            future = asyncio.run_coroutine_threadsafe(
-                telegram_app.process_update(update), 
-                event_loop
-            )
-            future.result(timeout=30)  # Wait for completion
-            return True
+        await update.message.reply_text(output)
+        logger.info("Response sent successfully")
     except Exception as e:
-        print(f"Update processing error: {e}")
-        return False
-    
-    return False
+        logger.error(f"Failed to send response: {e}")
+        # Fallback
+        await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
 
-# Flask app
-web_app = Flask(__name__)
-
-@web_app.route('/')
-def home():
-    return "🤖 Wishlink Bot is Running!"
-
-@web_app.route('/health')
-def health():
-    return jsonify({"status": "ok", "message": "Bot is running"})
-
-@web_app.route(f'/{TOKEN}', methods=['POST'])
-def webhook():
-    try:
-        update_dict = request.get_json()
-        
-        if not update_dict:
-            return jsonify({"error": "No data"}), 400
-        
-        # Process update in background
-        executor.submit(process_update_sync, update_dict)
-        
-        return jsonify({"status": "ok"})
-        
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        return jsonify({"error": "Processing failed"}), 500
-
-# Background event loop for async operations
-def run_event_loop():
-    global event_loop
-    event_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(event_loop)
-    event_loop.run_forever()
-
-# Main function
 def main():
-    global telegram_app
+    logger.info("Starting bot...")
     
-    # Start background event loop
-    loop_thread = threading.Thread(target=run_event_loop, daemon=True)
-    loop_thread.start()
-    
-    # Wait for event loop to be ready
-    import time
-    time.sleep(1)
-    
-    # Create telegram app
-    telegram_app = ApplicationBuilder().token(TOKEN).build()
+    # Create application
+    app = ApplicationBuilder().token(TOKEN).build()
     
     # Add handlers
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("health", health_check))
-    telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
     
-    # Set webhook
-    async def setup_webhook():
-        await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    # Run with webhook
+    logger.info(f"Setting webhook: {WEBHOOK_URL}/{TOKEN}")
     
-    asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop).result()
-    
-    print("🚀 Bot setup complete!")
-    
-    # Run Flask app
-    port = int(os.getenv("PORT", 10000))
-    web_app.run(host='0.0.0.0', port=port, debug=False)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
