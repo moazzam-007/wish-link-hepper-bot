@@ -6,8 +6,9 @@ from telegram import Update
 from telegram.helpers import escape_markdown
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 from flask import Flask, request, jsonify
-import threading
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 # Environment variables
 TOKEN = os.getenv("BOT_TOKEN")
@@ -20,8 +21,10 @@ TITLES = [
     "🛒 Shop Now!", "📢 Price Drop!", "🎉 Mega Offer!", "🤑 Crazy Discount!"
 ]
 
-# Global app variable
+# Global variables
 telegram_app = None
+event_loop = None
+executor = ThreadPoolExecutor(max_workers=4)
 
 # Get final URL after redirects
 def get_final_url_from_redirect(start_url):
@@ -32,7 +35,7 @@ def get_final_url_from_redirect(start_url):
     except:
         return None
 
-# Extract post ID from Instagram URL - FIXED: Added reels support
+# Extract post ID from Instagram URL
 def extract_post_id_from_url(url):
     match = re.search(r"/(?:post|reels)/(\d+)", url)
     return match.group(1) if match else None
@@ -66,7 +69,7 @@ def get_product_links_from_post(post_id):
     
     return []
 
-# FIXED: Proper markdown escaping
+# Proper markdown escaping
 def escape_for_markdown(text):
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in special_chars:
@@ -85,10 +88,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text:
         text = update.message.text
     elif update.message.caption:
-        text = update.message.caption
-    elif update.message.forward_from and update.message.text:
-        text = update.message.text
-    elif update.message.forward_from and update.message.caption:
         text = update.message.caption
     
     if not text:
@@ -115,17 +114,17 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     title = random.choice(TITLES)
-    max_links_per_message = 10
+    max_links_per_message = 8
     link_chunks = [all_links[i:i + max_links_per_message] for i in range(0, len(all_links), max_links_per_message)]
     
     for i, chunk in enumerate(link_chunks):
         if i == 0:
             output = f"*{escape_for_markdown(title)}*\n\n"
         else:
-            output = f"*{escape_for_markdown(title)} - Part {i+1}*\n\n"
+            output = f"*{escape_for_markdown(title)} \\- Part {i+1}*\n\n"
         
         for link in chunk:
-            discount = random.randint(50, 100)
+            discount = random.randint(50, 90)
             discount_text = escape_for_markdown(f"({discount}% OFF)")
             safe_link = escape_for_markdown(link)
             output += f"{discount_text} {safe_link}\n\n"
@@ -133,49 +132,85 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await update.message.reply_text(output, parse_mode="MarkdownV2")
         except Exception as e:
-            plain_output = output.replace('\\', '')
+            # Fallback to plain text
+            plain_output = title + "\n\n"
+            for link in chunk:
+                discount = random.randint(50, 90)
+                plain_output += f"({discount}% OFF) {link}\n\n"
             await update.message.reply_text(plain_output)
 
 # Health check
 async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot is running! 🟢")
 
-# Flask app for webhook
+# FIXED: Proper async handling in Flask
+def process_update_sync(update_dict):
+    """Process telegram update in sync context"""
+    global telegram_app, event_loop
+    
+    try:
+        if telegram_app and event_loop:
+            update = Update.de_json(update_dict, telegram_app.bot)
+            
+            # Run coroutine in the event loop
+            future = asyncio.run_coroutine_threadsafe(
+                telegram_app.process_update(update), 
+                event_loop
+            )
+            future.result(timeout=30)  # Wait for completion
+            return True
+    except Exception as e:
+        print(f"Update processing error: {e}")
+        return False
+    
+    return False
+
+# Flask app
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def home():
-    return "Bot is running! 🤖"
+    return "🤖 Wishlink Bot is Running!"
 
 @web_app.route('/health')
 def health():
-    return {"status": "ok", "message": "Bot is running"}
+    return jsonify({"status": "ok", "message": "Bot is running"})
 
-# FIXED: Webhook handler
 @web_app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
-    global telegram_app
-    if telegram_app:
-        try:
-            # Get the update from Telegram
-            update_dict = request.get_json()
-            
-            # Process the update
-            asyncio.create_task(
-                telegram_app.process_update(
-                    Update.de_json(update_dict, telegram_app.bot)
-                )
-            )
-            return jsonify({"status": "ok"})
-        except Exception as e:
-            print(f"Webhook error: {e}")
-            return jsonify({"error": str(e)}), 500
-    
-    return jsonify({"error": "App not ready"}), 503
+    try:
+        update_dict = request.get_json()
+        
+        if not update_dict:
+            return jsonify({"error": "No data"}), 400
+        
+        # Process update in background
+        executor.submit(process_update_sync, update_dict)
+        
+        return jsonify({"status": "ok"})
+        
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return jsonify({"error": "Processing failed"}), 500
+
+# Background event loop for async operations
+def run_event_loop():
+    global event_loop
+    event_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(event_loop)
+    event_loop.run_forever()
 
 # Main function
 def main():
     global telegram_app
+    
+    # Start background event loop
+    loop_thread = threading.Thread(target=run_event_loop, daemon=True)
+    loop_thread.start()
+    
+    # Wait for event loop to be ready
+    import time
+    time.sleep(1)
     
     # Create telegram app
     telegram_app = ApplicationBuilder().token(TOKEN).build()
@@ -183,10 +218,15 @@ def main():
     # Add handlers
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(CommandHandler("health", health_check))
-    telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION | filters.FORWARDED, handle_link))
+    telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
     
     # Set webhook
-    asyncio.run(telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}"))
+    async def setup_webhook():
+        await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    
+    asyncio.run_coroutine_threadsafe(setup_webhook(), event_loop).result()
+    
+    print("🚀 Bot setup complete!")
     
     # Run Flask app
     port = int(os.getenv("PORT", 10000))
