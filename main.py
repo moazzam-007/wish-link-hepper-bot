@@ -5,8 +5,9 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import logging
-from flask import Flask
+from flask import Flask, jsonify
 import threading
+import asyncio
 
 # Enable logging
 logging.basicConfig(
@@ -25,6 +26,9 @@ TITLES = [
     "🎯 Grab Fast!", "🚨 Flash Sale!", "💎 Special Deal Just For You!",
     "🛒 Shop Now!", "📢 Price Drop!", "🎉 Mega Offer!", "🤑 Crazy Discount!"
 ]
+
+# Global telegram app
+telegram_app = None
 
 def get_final_url_from_redirect(start_url):
     try:
@@ -145,53 +149,84 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to send response: {e}")
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
 
-# ADDED: Health check web server for uptime monitoring
-def create_health_server():
-    app = Flask(__name__)
-    
-    @app.route('/')
-    def home():
-        return "🤖 Wishlink Bot is Running! ✅"
-    
-    @app.route('/health')
-    def health():
-        return {"status": "ok", "bot": "running", "service": "active"}
-    
-    @app.route('/status')
-    def status():
-        return "Bot Status: Active 🟢"
-    
-    return app
+# FIXED: Combined Flask + Telegram on same port
+def process_telegram_update(update_dict):
+    """Process Telegram update async"""
+    global telegram_app
+    if telegram_app:
+        try:
+            update = Update.de_json(update_dict, telegram_app.bot)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(telegram_app.process_update(update))
+            loop.close()
+            return True
+        except Exception as e:
+            logger.error(f"Update processing error: {e}")
+    return False
 
-def run_health_server():
-    health_app = create_health_server()
-    # Run on different port to avoid conflicts
-    health_app.run(host='0.0.0.0', port=8080, debug=False)
+# Flask app with webhook handling
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Wishlink Bot is Running! ✅"
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok", "bot": "running", "service": "active"})
+
+@app.route('/status')
+def status():
+    return "Bot Status: Active 🟢"
+
+# FIXED: Webhook endpoint on same Flask app
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    try:
+        from flask import request
+        update_dict = request.get_json()
+        
+        if not update_dict:
+            return jsonify({"error": "No data"}), 400
+        
+        # Process in background thread
+        import threading
+        thread = threading.Thread(target=process_telegram_update, args=(update_dict,))
+        thread.start()
+        
+        return jsonify({"status": "ok"})
+        
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+        return jsonify({"error": "Processing failed"}), 500
 
 def main():
+    global telegram_app
     logger.info("Starting bot...")
     
-    # Start health server in background
-    health_thread = threading.Thread(target=run_health_server, daemon=True)
-    health_thread.start()
-    logger.info("Health server started on port 8080")
-    
     # Create telegram application
-    app = ApplicationBuilder().token(TOKEN).build()
+    telegram_app = ApplicationBuilder().token(TOKEN).build()
     
     # Add handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
     
-    # Run with webhook
-    logger.info(f"Setting webhook: {WEBHOOK_URL}/{TOKEN}")
+    # Set webhook
+    async def setup_webhook():
+        await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
     
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.getenv("PORT", 10000)),
-        url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(setup_webhook())
+    loop.close()
+    
+    logger.info(f"Webhook set: {WEBHOOK_URL}/{TOKEN}")
+    logger.info("Starting Flask server...")
+    
+    # Run Flask app (this handles both webhook and health checks)
+    port = int(os.getenv("PORT", 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == "__main__":
     main()
