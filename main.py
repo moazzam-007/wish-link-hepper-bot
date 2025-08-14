@@ -2,19 +2,22 @@ import os
 import random
 import re
 import requests
-from telegram import Update, InputMediaPhoto
+from telegram import Update
 from telegram.helpers import escape_markdown
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
+# Environment variables
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
+# Random titles
 TITLES = [
     "🔥 Loot Deal Alert!", "💥 Hot Deal Incoming!", "⚡ Limited Time Offer!",
     "🎯 Grab Fast!", "🚨 Flash Sale!", "💎 Special Deal Just For You!",
     "🛒 Shop Now!", "📢 Price Drop!", "🎉 Mega Offer!", "🤑 Crazy Discount!"
 ]
 
+# Get final URL after redirects
 def get_final_url_from_redirect(start_url):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -23,10 +26,12 @@ def get_final_url_from_redirect(start_url):
     except:
         return None
 
+# Extract post ID from Instagram URL
 def extract_post_id_from_url(url):
     match = re.search(r"/(?:post|reels)/(\d+)", url)
     return match.group(1) if match else None
 
+# Get product links from Wishlink API
 def get_product_links_from_post(post_id):
     headers = {
         "accept": "*/*",
@@ -46,16 +51,17 @@ def get_product_links_from_post(post_id):
     except:
         return []
 
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Hey! 👋 Send me a Wishlink or Instagram post/reel link and I’ll fetch the real product links for you."
     )
 
+# Handle incoming links
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Get text from normal message or caption (for media)
     text = update.message.text or update.message.caption
     if not text:
-        return  # No link found
+        return
 
     await update.message.reply_text("Processing your link… 🔄")
 
@@ -81,11 +87,13 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     for link in all_links:
         discount = random.randint(50, 100)
+        discount_text = escape_markdown(f"({discount}% OFF)", version=2)  # Escape brackets & %
         safe_link = escape_markdown(link, version=2)
-        output += f"({discount}% OFF) {safe_link}\n\n"
+        output += f"{discount_text} {safe_link}\n\n"
 
     await update.message.reply_text(output, parse_mode="MarkdownV2")
 
+# Main app
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
