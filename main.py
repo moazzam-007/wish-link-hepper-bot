@@ -2,13 +2,13 @@ import os
 import random
 import re
 import requests
-from telegram import Update
+from telegram import Update, InputMediaPhoto
+from telegram.helpers import escape_markdown
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# --- Random Titles ---
 TITLES = [
     "🔥 Loot Deal Alert!", "💥 Hot Deal Incoming!", "⚡ Limited Time Offer!",
     "🎯 Grab Fast!", "🚨 Flash Sale!", "💎 Special Deal Just For You!",
@@ -25,9 +25,7 @@ def get_final_url_from_redirect(start_url):
 
 def extract_post_id_from_url(url):
     match = re.search(r"/(?:post|reels)/(\d+)", url)
-    if match:
-        return match.group(1)
-    return None
+    return match.group(1) if match else None
 
 def get_product_links_from_post(post_id):
     headers = {
@@ -38,16 +36,13 @@ def get_product_links_from_post(post_id):
         "user-agent": "Mozilla/5.0",
         "wishlinkid": "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719",
     }
-
     api_url = f"https://api.wishlink.com/api/store/getPostOrCollectionProducts?page=1&limit=50&postType=POST&postOrCollectionId={post_id}&sourceApp=STOREFRONT"
-
     try:
         response = requests.get(api_url, headers=headers)
         response.raise_for_status()
         data = response.json()
         products = data.get("data", {}).get("products", [])
-        links = [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
-        return links
+        return [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
     except:
         return []
 
@@ -57,38 +52,44 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
+    # Get text from normal message or caption (for media)
+    text = update.message.text or update.message.caption
+    if not text:
+        return  # No link found
+
     await update.message.reply_text("Processing your link… 🔄")
 
     all_links = []
+    urls = re.findall(r'(https?://\S+)', text)
 
-    if "/share/" in url:
-        redirected = get_final_url_from_redirect(url)
-        if redirected:
-            all_links.append(redirected)
-    else:
-        post_id = extract_post_id_from_url(url)
-        if post_id:
-            all_links.extend(get_product_links_from_post(post_id))
+    for url in urls:
+        if "/share/" in url:
+            redirected = get_final_url_from_redirect(url)
+            if redirected:
+                all_links.append(redirected)
+        else:
+            post_id = extract_post_id_from_url(url)
+            if post_id:
+                all_links.extend(get_product_links_from_post(post_id))
 
     if not all_links:
         await update.message.reply_text("❌ No product links found.")
         return
 
-    # --- Random title ---
     title = random.choice(TITLES)
-    output = f"*{title}*\n\n"
+    output = f"*{escape_markdown(title, version=2)}*\n\n"
 
     for link in all_links:
         discount = random.randint(50, 100)
-        output += f"({discount}% OFF) {link}\n\n"
+        safe_link = escape_markdown(link, version=2)
+        output += f"({discount}% OFF) {safe_link}\n\n"
 
-    await update.message.reply_text(output, parse_mode="Markdown")
+    await update.message.reply_text(output, parse_mode="MarkdownV2")
 
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
 
     app.run_webhook(
         listen="0.0.0.0",
