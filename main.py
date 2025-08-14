@@ -5,9 +5,6 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import logging
-from flask import Flask, request, jsonify
-import asyncio
-import threading
 
 # Enable logging
 logging.basicConfig(
@@ -26,9 +23,6 @@ TITLES = [
     "🎯 Grab Fast!", "🚨 Flash Sale!", "💎 Special Deal Just For You!",
     "🛒 Shop Now!", "📢 Price Drop!", "🎉 Mega Offer!", "🤑 Crazy Discount!"
 ]
-
-# Global telegram app
-telegram_app = None
 
 def get_final_url_from_redirect(start_url):
     try:
@@ -149,99 +143,25 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to send response: {e}")
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
 
-# FIXED: Proper async processing with initialized app
-async def process_telegram_update_async(update_dict):
-    """Process Telegram update properly"""
-    global telegram_app
-    if telegram_app:
-        try:
-            update = Update.de_json(update_dict, telegram_app.bot)
-            await telegram_app.process_update(update)
-            return True
-        except Exception as e:
-            logger.error(f"Update processing error: {e}")
-    return False
-
-def process_telegram_update(update_dict):
-    """Sync wrapper for async processing"""
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(process_telegram_update_async(update_dict))
-        loop.close()
-        return result
-    except Exception as e:
-        logger.error(f"Sync wrapper error: {e}")
-        return False
-
-# Flask app
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Wishlink Bot is Running! ✅"
-
-@app.route('/health')
-def health():
-    return jsonify({"status": "ok", "bot": "running", "service": "active"})
-
-@app.route('/status')
-def status():
-    return "Bot Status: Active 🟢"
-
-@app.route(f'/{TOKEN}', methods=['POST'])
-def webhook():
-    try:
-        update_dict = request.get_json()
-        
-        if not update_dict:
-            return jsonify({"error": "No data"}), 400
-        
-        # Process in background thread
-        thread = threading.Thread(target=process_telegram_update, args=(update_dict,))
-        thread.start()
-        
-        return jsonify({"status": "ok"})
-        
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return jsonify({"error": "Processing failed"}), 500
-
-async def setup_bot():
-    """Setup and initialize bot properly"""
-    global telegram_app
-    
-    # Create telegram application
-    telegram_app = ApplicationBuilder().token(TOKEN).build()
-    
-    # Add handlers
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
-    
-    # FIXED: Initialize the application properly
-    await telegram_app.initialize()
-    await telegram_app.start()
-    
-    # Set webhook
-    await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
-    logger.info(f"Webhook set: {WEBHOOK_URL}/{TOKEN}")
-    
-    return telegram_app
-
 def main():
     logger.info("Starting bot...")
     
-    # Setup bot properly
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(setup_bot())
-    # Don't close the loop - keep it for processing updates
+    # Create application
+    app = ApplicationBuilder().token(TOKEN).build()
     
-    logger.info("Starting Flask server...")
+    # Add handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
     
-    # Run Flask app
-    port = int(os.getenv("PORT", 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Run with webhook - SIMPLE APPROACH
+    logger.info(f"Setting webhook: {WEBHOOK_URL}/{TOKEN}")
+    
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
+    )
 
 if __name__ == "__main__":
     main()
