@@ -2,14 +2,11 @@ import os
 import random
 import re
 import requests
-from flask import Flask, request
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: https://your-app.onrender.com/webhook
-
-app = Flask(__name__)
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g., https://wishlink-bot.onrender.com
 
 # --- Random Titles ---
 TITLES = [
@@ -78,7 +75,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Random title ---
     title = random.choice(TITLES)
-    output = f"**{title}**\n\n"
+    output = f"*{title}*\n\n"
 
     for link in all_links:
         discount = random.randint(50, 100)
@@ -86,19 +83,14 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(output, parse_mode="Markdown")
 
-@app.route(f"/webhook", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put_nowait(update)
-    return "OK", 200
-
 if __name__ == "__main__":
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+
     application.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 8080)),
-        url_path="webhook",
-        webhook_url=f"{WEBHOOK_URL}/webhook"
+        url_path=TOKEN,
+        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
     )
