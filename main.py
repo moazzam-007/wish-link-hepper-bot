@@ -5,6 +5,8 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import logging
+from flask import Flask
+import threading
 
 # Enable logging
 logging.basicConfig(
@@ -143,17 +145,36 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to send response: {e}")
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
 
+# MINIMAL HEALTH SERVER - runs in background
+def run_health_server():
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def home():
+        return "🤖 Bot is running!"
+    
+    @app.route('/health') 
+    def health():
+        return "OK"
+    
+    # Run on port 8080 (different from main)
+    app.run(host='0.0.0.0', port=8080, debug=False)
+
 def main():
     logger.info("Starting bot...")
     
-    # Create application
+    # Start minimal health server in background
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    
+    # Create telegram application
     app = ApplicationBuilder().token(TOKEN).build()
     
     # Add handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
     
-    # Run with webhook - SIMPLE APPROACH
+    # Run with webhook
     logger.info(f"Setting webhook: {WEBHOOK_URL}/{TOKEN}")
     
     app.run_webhook(
