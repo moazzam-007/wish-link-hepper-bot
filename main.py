@@ -5,9 +5,9 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import logging
-from flask import Flask, jsonify
-import threading
+from flask import Flask, request, jsonify
 import asyncio
+import threading
 
 # Enable logging
 logging.basicConfig(
@@ -149,23 +149,32 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Failed to send response: {e}")
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
 
-# FIXED: Combined Flask + Telegram on same port
-def process_telegram_update(update_dict):
-    """Process Telegram update async"""
+# FIXED: Proper async processing with initialized app
+async def process_telegram_update_async(update_dict):
+    """Process Telegram update properly"""
     global telegram_app
     if telegram_app:
         try:
             update = Update.de_json(update_dict, telegram_app.bot)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(telegram_app.process_update(update))
-            loop.close()
+            await telegram_app.process_update(update)
             return True
         except Exception as e:
             logger.error(f"Update processing error: {e}")
     return False
 
-# Flask app with webhook handling
+def process_telegram_update(update_dict):
+    """Sync wrapper for async processing"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(process_telegram_update_async(update_dict))
+        loop.close()
+        return result
+    except Exception as e:
+        logger.error(f"Sync wrapper error: {e}")
+        return False
+
+# Flask app
 app = Flask(__name__)
 
 @app.route('/')
@@ -180,18 +189,15 @@ def health():
 def status():
     return "Bot Status: Active 🟢"
 
-# FIXED: Webhook endpoint on same Flask app
 @app.route(f'/{TOKEN}', methods=['POST'])
 def webhook():
     try:
-        from flask import request
         update_dict = request.get_json()
         
         if not update_dict:
             return jsonify({"error": "No data"}), 400
         
         # Process in background thread
-        import threading
         thread = threading.Thread(target=process_telegram_update, args=(update_dict,))
         thread.start()
         
@@ -201,9 +207,9 @@ def webhook():
         logger.error(f"Webhook error: {e}")
         return jsonify({"error": "Processing failed"}), 500
 
-def main():
+async def setup_bot():
+    """Setup and initialize bot properly"""
     global telegram_app
-    logger.info("Starting bot...")
     
     # Create telegram application
     telegram_app = ApplicationBuilder().token(TOKEN).build()
@@ -212,19 +218,28 @@ def main():
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION, handle_link))
     
-    # Set webhook
-    async def setup_webhook():
-        await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    # FIXED: Initialize the application properly
+    await telegram_app.initialize()
+    await telegram_app.start()
     
+    # Set webhook
+    await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}")
+    logger.info(f"Webhook set: {WEBHOOK_URL}/{TOKEN}")
+    
+    return telegram_app
+
+def main():
+    logger.info("Starting bot...")
+    
+    # Setup bot properly
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    loop.run_until_complete(setup_webhook())
-    loop.close()
+    loop.run_until_complete(setup_bot())
+    # Don't close the loop - keep it for processing updates
     
-    logger.info(f"Webhook set: {WEBHOOK_URL}/{TOKEN}")
     logger.info("Starting Flask server...")
     
-    # Run Flask app (this handles both webhook and health checks)
+    # Run Flask app
     port = int(os.getenv("PORT", 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
 
