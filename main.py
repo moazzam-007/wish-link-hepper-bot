@@ -1,5 +1,3 @@
-# NEW SIMPLIFIED CODE - Replace kar do is se:
-
 import os
 import random
 import re
@@ -7,6 +5,8 @@ import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import logging
+from flask import Flask
+import threading
 
 # Enable logging
 logging.basicConfig(
@@ -83,7 +83,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Message received from user: {update.effective_user.id}")
     
-    # Get text from message or caption
     text = update.message.text or update.message.caption
     
     if not text:
@@ -92,7 +91,6 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Processing text: {text}")
     
-    # Check if message contains any URL
     if not any(word.startswith('http') for word in text.split()):
         logger.info("No HTTP links found in text")
         return
@@ -129,10 +127,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No product links found. Please check your Wishlink URL format.")
         return
     
-    # Simple output 
     title = random.choice(TITLES)
-    
-    # Limit links to avoid long messages
     max_links = 8
     if len(all_links) > max_links:
         all_links = all_links[:max_links]
@@ -148,13 +143,40 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info("Response sent successfully")
     except Exception as e:
         logger.error(f"Failed to send response: {e}")
-        # Fallback
         await update.message.reply_text(f"✅ Found {len(all_links)} product links!")
+
+# ADDED: Health check web server for uptime monitoring
+def create_health_server():
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def home():
+        return "🤖 Wishlink Bot is Running! ✅"
+    
+    @app.route('/health')
+    def health():
+        return {"status": "ok", "bot": "running", "service": "active"}
+    
+    @app.route('/status')
+    def status():
+        return "Bot Status: Active 🟢"
+    
+    return app
+
+def run_health_server():
+    health_app = create_health_server()
+    # Run on different port to avoid conflicts
+    health_app.run(host='0.0.0.0', port=8080, debug=False)
 
 def main():
     logger.info("Starting bot...")
     
-    # Create application
+    # Start health server in background
+    health_thread = threading.Thread(target=run_health_server, daemon=True)
+    health_thread.start()
+    logger.info("Health server started on port 8080")
+    
+    # Create telegram application
     app = ApplicationBuilder().token(TOKEN).build()
     
     # Add handlers
