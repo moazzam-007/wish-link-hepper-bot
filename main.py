@@ -5,6 +5,9 @@ import requests
 from telegram import Update
 from telegram.helpers import escape_markdown
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from flask import Flask, request, jsonify
+import threading
+import asyncio
 
 # Environment variables
 TOKEN = os.getenv("BOT_TOKEN")
@@ -17,6 +20,9 @@ TITLES = [
     "🛒 Shop Now!", "📢 Price Drop!", "🎉 Mega Offer!", "🤑 Crazy Discount!"
 ]
 
+# Global app variable
+telegram_app = None
+
 # Get final URL after redirects
 def get_final_url_from_redirect(start_url):
     try:
@@ -28,7 +34,6 @@ def get_final_url_from_redirect(start_url):
 
 # Extract post ID from Instagram URL - FIXED: Added reels support
 def extract_post_id_from_url(url):
-    # Support both /post/ and /reels/
     match = re.search(r"/(?:post|reels)/(\d+)", url)
     return match.group(1) if match else None
 
@@ -43,7 +48,6 @@ def get_product_links_from_post(post_id):
         "wishlinkid": "1752163729058-1dccdb9e-a0f9-f088-a678-e14f8997f719",
     }
     
-    # Try both POST and REELS API endpoints
     api_urls = [
         f"https://api.wishlink.com/api/store/getPostOrCollectionProducts?page=1&limit=50&postType=POST&postOrCollectionId={post_id}&sourceApp=STOREFRONT",
         f"https://api.wishlink.com/api/store/getPostOrCollectionProducts?page=1&limit=50&postType=REELS&postOrCollectionId={post_id}&sourceApp=STOREFRONT"
@@ -55,7 +59,7 @@ def get_product_links_from_post(post_id):
             response.raise_for_status()
             data = response.json()
             products = data.get("data", {}).get("products", [])
-            if products:  # If we found products, return them
+            if products:
                 return [p["purchaseUrl"] for p in products if "purchaseUrl" in p]
         except:
             continue
@@ -64,7 +68,6 @@ def get_product_links_from_post(post_id):
 
 # FIXED: Proper markdown escaping
 def escape_for_markdown(text):
-    # Escape all special characters for MarkdownV2
     special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
@@ -76,9 +79,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Hey! 👋 Send me a Wishlink or Instagram post/reel link and I'll fetch the real product links for you."
     )
 
-# FIXED: Handle forwarded messages and images with captions
+# Handle links
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Get text from message, caption, or forwarded message
     text = None
     if update.message.text:
         text = update.message.text
@@ -112,10 +114,7 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ No product links found.")
         return
 
-    # FIXED: Handle long messages by splitting
     title = random.choice(TITLES)
-    
-    # Split links into chunks to avoid "Message too long" error
     max_links_per_message = 10
     link_chunks = [all_links[i:i + max_links_per_message] for i in range(0, len(all_links), max_links_per_message)]
     
@@ -127,57 +126,71 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         for link in chunk:
             discount = random.randint(50, 100)
-            # FIXED: Proper escaping for discount and link
             discount_text = escape_for_markdown(f"({discount}% OFF)")
             safe_link = escape_for_markdown(link)
             output += f"{discount_text} {safe_link}\n\n"
         
-        # Send message with proper error handling
         try:
             await update.message.reply_text(output, parse_mode="MarkdownV2")
         except Exception as e:
-            # Fallback to plain text if markdown fails
             plain_output = output.replace('\\', '')
             await update.message.reply_text(plain_output)
 
-# FIXED: Add health check endpoint for render
+# Health check
 async def health_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bot is running! 🟢")
 
-# Main app
+# Flask app for webhook
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is running! 🤖"
+
+@web_app.route('/health')
+def health():
+    return {"status": "ok", "message": "Bot is running"}
+
+# FIXED: Webhook handler
+@web_app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    global telegram_app
+    if telegram_app:
+        try:
+            # Get the update from Telegram
+            update_dict = request.get_json()
+            
+            # Process the update
+            asyncio.create_task(
+                telegram_app.process_update(
+                    Update.de_json(update_dict, telegram_app.bot)
+                )
+            )
+            return jsonify({"status": "ok"})
+        except Exception as e:
+            print(f"Webhook error: {e}")
+            return jsonify({"error": str(e)}), 500
+    
+    return jsonify({"error": "App not ready"}), 503
+
+# Main function
+def main():
+    global telegram_app
+    
+    # Create telegram app
+    telegram_app = ApplicationBuilder().token(TOKEN).build()
+    
+    # Add handlers
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(CommandHandler("health", health_check))
+    telegram_app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION | filters.FORWARDED, handle_link))
+    
+    # Set webhook
+    asyncio.run(telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/{TOKEN}"))
+    
+    # Run Flask app
+    port = int(os.getenv("PORT", 10000))
+    web_app.run(host='0.0.0.0', port=port, debug=False)
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
-    
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("health", health_check))
-    app.add_handler(MessageHandler(filters.TEXT | filters.CAPTION | filters.FORWARDED, handle_link))
-    
-    # Add a simple web endpoint for render health check
-    from flask import Flask
-    import threading
-    
-    web_app = Flask(__name__)
-    
-    @web_app.route('/')
-    def home():
-        return "Bot is running! 🤖"
-    
-    @web_app.route('/health')
-    def health():
-        return {"status": "ok", "message": "Bot is running"}
-    
-    # Run Flask app in background thread
-    def run_web():
-        web_app.run(host='0.0.0.0', port=int(os.getenv("PORT", 8080)))
-    
-    web_thread = threading.Thread(target=run_web)
-    web_thread.daemon = True
-    web_thread.start()
-    
-    # Run telegram bot
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.getenv("PORT", 8080)) + 1,  # Use different port for telegram
-        url_path=TOKEN,
-        webhook_url=f"{WEBHOOK_URL}/{TOKEN}"
-    )
+    main()
